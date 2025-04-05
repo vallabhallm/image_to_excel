@@ -1,0 +1,10 @@
+openai:
+  vision:
+    messages:
+      - role: "user"
+        content:
+          - type: "text"
+            text: "Test message"
+          - type: "image_url"
+            image_url:
+              url_prefix: "data:image/jpeg;base64,"

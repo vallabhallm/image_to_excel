@@ -1,0 +1,16 @@
+openai:
+  api_key: "your-api-key-here"
+  vision:
+    model: "gpt-4-vision-preview"
+    max_tokens: 1000
+    messages:
+      - role: "user"
+        content:
+          - type: "text"
+            text: "Extract all invoice details from this image including invoice number, date, items, quantities, prices, and totals. Format the response as a JSON object."
+          - type: "image"
+            image_url: null  # Will be replaced with actual image data
+
+output:
+  excel:
+    default_filename: "output.xlsx"
