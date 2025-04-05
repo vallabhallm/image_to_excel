@@ -9,7 +9,7 @@ This project provides a powerful tool for converting data from images and PDFs i
 - Excel file generation with formatted data
 - Support for multiple formats (PDF, PNG, JPEG, JPG)
 - Simple command-line interface
-- Comprehensive test coverage (99%)
+- Comprehensive test coverage (88%)
 - YAML-based configuration
 
 ## Project Structure
@@ -34,80 +34,13 @@ image-to-excel
     └── conftest.py         # Test configuration and fixtures
 ```
 
-## Class Diagram
-
-```mermaid
-classDiagram
-    class ImageParser {
-        +str api_key
-        +Dict config
-        +__init__(api_key: str)
-        +is_image_file(file_path: str) -> bool
-        +process_file(file_path: str) -> Optional[List[Dict]]
-        +process_image(image_path_or_bytes) -> Dict
-        +parse_directory(directory_path: str) -> Dict[str, List[Dict]]
-        -_load_config() -> Dict
-    }
-    
-    class ExcelGenerator {
-        -workbook
-        -current_sheet
-        +__init__()
-        +create_excel(data: Dict[str, List[Dict]]) -> None
-        +save_excel(output_path: str) -> bool
-        -_clean_sheet_name(name: str) -> str
-    }
-    
-    class Main {
-        +load_config() -> Dict
-        +main()
-    }
-
-    Main --> ImageParser : uses
-    Main --> ExcelGenerator : uses
-```
-
-## Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Main
-    participant Config
-    participant ImageParser
-    participant ExcelGenerator
-    
-    User->>Main: Run program with input directory
-    Main->>Config: Load configuration
-    Config-->>Main: Return config settings
-    Main->>ImageParser: Create parser with API key
-    Main->>ImageParser: Parse directory
-    loop For each file
-        ImageParser->>ImageParser: Check file type
-        alt PDF file
-            ImageParser->>ImageParser: Convert PDF pages to images
-            loop For each page
-                ImageParser->>OpenAI API: Send page image for analysis
-                OpenAI API-->>ImageParser: Return extracted data
-            end
-        else Image file
-            ImageParser->>OpenAI API: Send image for analysis
-            OpenAI API-->>ImageParser: Return extracted data
-        end
-    end
-    ImageParser-->>Main: Return parsed data
-    Main->>ExcelGenerator: Create Excel with data
-    ExcelGenerator-->>Main: Return success
-    Main-->>User: Show success message
-```
-
 ## Configuration
 
-The application uses a YAML-based configuration file (`conf/api_config.yaml`) for managing settings:
+The application uses a YAML-based configuration file (`conf/api_config.yaml`) for managing settings. Copy `api_config.yaml.example` to `api_config.yaml` and update with your settings:
 
 ```yaml
 openai:
-  api_key: "OPEN_API_KEY"
+  api_key: "your-api-key-here"
   vision:
     model: "gpt-4-vision-preview"
     max_tokens: 1000
@@ -115,10 +48,10 @@ openai:
       - role: "user"
         content:
           - type: "text"
-            text: "Extract invoice details from this image."
-          - type: "image_url"
-            image_url:
-              url_prefix: "data:image/jpeg;base64,"
+            text: "Extract all invoice details from this image including invoice number, date, items, quantities, prices, and totals. Format the response as a JSON object."
+          - type: "image"
+            image_url: null  # Will be replaced with actual image data
+
 output:
   excel:
     default_filename: "output.xlsx"
@@ -127,19 +60,14 @@ output:
 ## Requirements
 
 - Python 3.6 or higher
-- Dependencies:
-  - openai: OpenAI API client
-  - openpyxl: Excel file handling
-  - pyyaml: YAML configuration parsing
-  - pytest: Testing framework
-  - pytest-cov: Test coverage reporting
+- Dependencies listed in requirements.txt
 
 ## Setup Instructions
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/image-to-excel.git
-   cd image-to-excel
+   git clone https://github.com/vallabhallm/image_to_excel.git
+   cd image_to_excel
    ```
 
 2. Create and activate a virtual environment (recommended):
@@ -153,13 +81,17 @@ output:
    pip install -r requirements.txt
    ```
 
-4. Update the API key in `conf/api_config.yaml`
+4. Copy the example config and update with your OpenAI API key:
+   ```bash
+   cp conf/api_config.yaml.example conf/api_config.yaml
+   # Edit conf/api_config.yaml with your API key
+   ```
 
 ## Usage
 
 Run the application:
 ```bash
-python src/main.py <input_directory>
+python -m src.main <input_directory>
 ```
 
 The program will:
@@ -169,7 +101,7 @@ The program will:
 
 ## Testing
 
-The project includes a comprehensive test suite with 99% code coverage. To run the tests:
+The project includes a comprehensive test suite. To run the tests:
 
 ```bash
 # Run tests with coverage report
@@ -180,75 +112,19 @@ pytest
 
 # Run tests with verbose output
 pytest -v
-
-# Run specific test file
-pytest tests/test_image_parser.py
 ```
-
-### Test Structure and Results
-
-1. **ImageParser Tests** (`test_image_parser.py`) - 99% coverage
-   - Configuration Loading
-     - Successful config loading
-     - Error handling for invalid config
-   - File Processing
-     - PDF file handling
-       - Multi-page PDF support
-       - PDF to image conversion
-     - Image file handling
-       - Support for JPG, JPEG, PNG
-       - File validation
-       - Base64 encoding
-     - OpenAI API integration
-     - Error handling
-   - Directory Processing
-     - Multiple file type handling
-     - Empty directory cases
-     - Error conditions
-
-2. **Excel Generator Tests** (`test_excel_generator.py`) - 100% coverage
-   - Excel Creation
-     - Dictionary data handling
-     - List data handling
-     - Empty data handling
-   - Sheet Operations
-     - Sheet name cleaning
-     - Special character handling
-     - Name length limits
-   - File Operations
-     - Successful saving
-     - Error handling
-
-3. **Main Application Tests** (`test_main.py`) - 98% coverage
-   - Configuration
-     - YAML loading
-     - Error handling
-   - Integration
-     - End-to-end workflow
-     - Command-line arguments
-     - Directory validation
-   - Error Handling
-     - Invalid paths
-     - Processing errors
-     - Save failures
 
 ### Latest Test Results
 
 ```
 Name                                Stmts   Miss  Cover   Missing
 -----------------------------------------------------------------
-src/generators/excel_generator.py      36      0   100%
-src/main.py                            40      1    98%   70
-src/parsers/image_parser.py            90      1    99%   197
+src/generators/excel_generator.py      48      4    92%   38, 63-65
+src/main.py                            51      1    98%   92
+src/parsers/image_parser.py           135     22    84%   66, 75, 124, 146, 161, 200-201, 205-206, 246-248, 254-264, 267
 -----------------------------------------------------------------
-TOTAL                                 166      2    99%
+TOTAL                                 234     27    88%
 ```
-
-Only two lines remain uncovered:
-- `main.py`: Line 70 (main() call in __main__ block)
-- `image_parser.py`: Line 197 (run_main() call in __main__ block)
-
-These are entry point lines that are typically not covered in testing.
 
 ## License
 
