@@ -1,267 +1,222 @@
+"""Image parser module."""
 import os
-import sys
-import base64
-import openai
-import yaml
-from typing import Dict, List, Optional
-from pdf2image import convert_from_path
 import io
-import fitz  # PyMuPDF
+import fitz
+from PIL import Image, ImageEnhance
 from loguru import logger
+from .openai_extractor import OpenAIExtractor
+from ..utils.config_manager import ConfigManager
 
 class ImageParser:
-    def __init__(self, api_key: str):
-        """
-        Initialize the ImageParser with OpenAI API key.
-
+    """Image parser class."""
+    
+    def __init__(self, api_key: str = None):
+        """Initialize parser.
+        
         Args:
-            api_key (str): OpenAI API key
+            api_key: OpenAI API key
         """
         logger.debug("Initializing ImageParser")
-        self.api_key = api_key
-        openai.api_key = api_key
-        self.config = self._load_config()
-
-    def _load_config(self) -> Dict:
-        """
-        Load configuration from YAML file.
-
-        Returns:
-            Dict: Configuration dictionary
-        """
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                                 'conf', 'api_config.yaml')
-        try:
-            with open(config_path, 'r') as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            logger.error(f"Failed to load configuration file: {e}")
-            raise Exception(f"Failed to load configuration file: {e}")
-
+        if not api_key:
+            config = ConfigManager()
+            api_key = config.get('openai', 'api_key')
+            if not api_key:
+                raise ValueError("OpenAI API key not found in config")
+        self.extractor = OpenAIExtractor(api_key)
+        
     def is_image_file(self, file_path: str) -> bool:
-        """
-        Check if a file is an image or PDF based on its extension.
-
+        """Check if file is an image.
+        
         Args:
-            file_path (str): Path to the file to check.
-
+            file_path: Path to file
+            
         Returns:
-            bool: True if the file is an image or PDF, False otherwise.
+            True if file is an image, False otherwise
         """
-        image_extensions = {'.jpg', '.jpeg', '.png', '.pdf'}
-        _, ext = os.path.splitext(file_path.lower())
-        logger.debug(f"File {file_path} is{' ' if ext in image_extensions else ' not '}supported (extension: {ext})")
-        return ext in image_extensions
-
-    def parse_image(self, image_path: str) -> Optional[Dict]:
-        """
-        Parse an image file.
-
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext not in ['.jpg', '.jpeg', '.png']:
+                logger.debug(f"File {file_path} is not supported (extension: {ext})")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Error checking file type: {e}")
+            return False
+            
+    def is_pdf_file(self, file_path: str) -> bool:
+        """Check if file is a PDF.
+        
         Args:
-            image_path (str): Path to the image file.
-
+            file_path: Path to file
+            
         Returns:
-            Optional[Dict]: Parsed data from the image, or None if parsing fails.
+            True if file is a PDF, False otherwise
         """
-        return self.process_file(image_path)
-
-    def extract_data(self) -> Optional[Dict]:
-        """
-        Extract data from an image. To be implemented by subclasses.
-
-        Returns:
-            Optional[Dict]: Extracted data, or None if extraction fails.
-        """
-        return None
-
-    def process_file(self, file_path: str) -> Dict:
-        """
-        Process an image or PDF file and extract data.
-
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext != '.pdf':
+                logger.debug(f"File {file_path} is not a PDF (extension: {ext})")
+                return False
+            logger.debug(f"File {file_path} is a PDF")
+            return True
+        except Exception as e:
+            logger.error(f"Error checking file type: {e}")
+            return False
+            
+    def process_image(self, image_path: str) -> dict:
+        """Process an image file.
+        
         Args:
-            file_path (str): Path to the file to process.
-
+            image_path: Path to image file
+            
         Returns:
-            Dict: Extracted data from the file. For PDFs, returns a list of results (one per page).
-                 For images, returns a single result dictionary.
+            Dictionary containing extracted text
+        """
+        if not os.path.exists(image_path):
+            logger.error(f"Image file not found: {image_path}")
+            return None
+            
+        if not self.is_image_file(image_path):
+            logger.error(f"Invalid image file: {image_path}")
+            return None
+            
+        try:
+            with open(image_path, 'rb') as f:
+                image_bytes = f.read()
+                text = self.extractor.extract_text(image_bytes)
+                if text:
+                    return {"content": text}
+                logger.error("Failed to extract text from image")
+                return None
+                    
+        except Exception as e:
+            logger.error(f"Error processing image: {e}")
+            return None
+            
+    def process_pdf(self, pdf_path: str) -> list:
+        """Process a PDF file.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            List of dictionaries containing extracted text
+        """
+        if not os.path.exists(pdf_path):
+            logger.error(f"PDF file not found: {pdf_path}")
+            return None
+            
+        if not self.is_pdf_file(pdf_path):
+            logger.error(f"Invalid PDF file: {pdf_path}")
+            return None
+            
+        try:
+            # Open PDF
+            doc = fitz.open(pdf_path)
+            if len(doc) == 0:
+                logger.error("PDF has no pages")
+                return None
+                
+            results = []
+            for page_num in range(len(doc)):
+                try:
+                    page = doc.load_page(page_num)
+                    # Increase resolution and use RGB color space
+                    zoom = 2.0  # Increase zoom for better quality
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                    
+                    # Convert pixmap to PIL Image
+                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    
+                    # Enhance image quality
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(1.5)  # Increase contrast
+                    
+                    # Convert PIL Image to bytes
+                    img_byte_arr = io.BytesIO()
+                    img.save(img_byte_arr, format='PNG', quality=95)  # Increase quality
+                    img_byte_arr.seek(0)
+                    img_byte_arr = img_byte_arr.getvalue()
+                    
+                    # Extract text
+                    text = self.extractor.extract_text(img_byte_arr)
+                    if text:
+                        results.append({"content": text})
+                    
+                except Exception as e:
+                    logger.error(f"Error processing page {page_num}: {e}")
+                    continue
+                    
+            if not results:
+                logger.error("No text extracted from any page")
+                return None
+                
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error processing PDF: {e}")
+            return None
+            
+    def process_file(self, file_path: str) -> list:
+        """Process a file.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            List of dictionaries containing extracted text
         """
         if not os.path.exists(file_path):
-            logger.error(f"File {file_path} does not exist")
+            logger.error(f"File not found: {file_path}")
             return None
-
-        _, ext = os.path.splitext(file_path.lower())
-        
-        # Check if file is supported
-        if not self.is_image_file(file_path):
-            logger.error(f"Unsupported file type {ext}")
-            return None
-
-        # Handle PDF files
-        if ext == '.pdf':
-            logger.info(f"Processing PDF file: {file_path}")
-            try:
-                # Open the PDF file
-                document = fitz.open(file_path)
-                results = []
-                
-                # Handle empty PDF
-                if len(document) == 0:
-                    logger.warning(f"PDF file {file_path} is empty")
-                    return []
-                
-                try:
-                    for page_number in range(len(document)):
-                        try:
-                            # Render page to an image
-                            logger.debug(f"Processing page {page_number + 1} of {len(document)}")
-                            page = document.load_page(page_number)
-                            pix = page.get_pixmap()
-                            image_bytes = io.BytesIO(pix.tobytes())
-                            result = self.process_image(image_bytes)
-                            if result:
-                                results.append(result)
-                            else:
-                                logger.warning(f"No data extracted from page {page_number + 1}")
-                        except Exception as e:
-                            logger.error(f"Error processing page {page_number + 1} of PDF {file_path}: {str(e)}")
-                            continue
-                    return results if results else None
-                finally:
-                    document.close()
-                    logger.debug("PDF document closed")
-            except Exception as e:
-                logger.error(f"Error opening PDF file {file_path}: {str(e)}")
-                return None
-        
-        # Handle image files (jpg, jpeg, png)
-        elif ext in {'.jpg', '.jpeg', '.png'}:
-            logger.info(f"Processing image file: {file_path}")
-            try:
+            
+        try:
+            if self.is_image_file(file_path):
                 result = self.process_image(file_path)
                 return [result] if result else None
-            except Exception as e:
-                logger.error(f"Error processing image file {file_path}: {str(e)}")
-                return None
-        
-        return None
-
-    def process_image(self, image_path_or_bytes) -> Dict:
-        """
-        Process a single image and extract data.
-
-        Args:
-            image_path_or_bytes (str or BytesIO): Path to the image file or image bytes.
-
-        Returns:
-            Dict: Extracted data from the image.
-        """
-        try:
-            if isinstance(image_path_or_bytes, str):
-                if not self.is_image_file(image_path_or_bytes):
-                    return None
-
-                # Create a base64 encoded string of the image
-                with open(image_path_or_bytes, "rb") as image_file:
-                    base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                
+            elif self.is_pdf_file(file_path):
+                return self.process_pdf(file_path)
+                
             else:
-                base64_image = base64.b64encode(image_path_or_bytes.read()).decode('utf-8')
-
-            # Create the messages for the API call
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract invoice details from this image."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ]
-
-            # Initialize OpenAI client
-            client = openai.OpenAI(api_key=self.config['openai']['api_key'])
-
-            # Call the OpenAI API
-            response = client.chat.completions.create(
-                model=self.config['openai']['vision']['model'],
-                messages=messages,
-                max_tokens=self.config['openai']['vision']['max_tokens']
-            )
-
-            # Extract and return the response content
-            if not response or not response.choices:
-                logger.warning("No response from OpenAI API")
+                logger.error(f"Unsupported file type: {file_path}")
                 return None
-
-            content = response.choices[0].message.content
-            if not content:
-                logger.warning("Empty content in API response")
-                return None
-
-            logger.info("Successfully extracted text from image")
-            return {"content": content}
-
+                
         except Exception as e:
             logger.error(f"Error processing file: {e}")
             return None
-
-    def parse_directory(self, directory_path: str) -> Dict[str, List[Dict]]:
-        """
-        Parse all images in a directory and its subdirectories.
-
+            
+    def parse_directory(self, directory_path: str) -> dict:
+        """Parse all files in a directory.
+        
         Args:
-            directory_path (str): Path to the directory to parse.
-
+            directory_path: Path to directory
+            
         Returns:
-            Dict[str, List[Dict]]: Dictionary mapping directory names to lists of parsed data.
+            Dictionary mapping directory names to lists of extracted text
         """
         if not os.path.exists(directory_path):
-            logger.error(f"Directory {directory_path} does not exist")
-            raise Exception(f"Directory {directory_path} does not exist")
-
-        logger.info(f"Parsing directory: {directory_path}")
-        results = {}
-        try:
-            for root, _, files in os.walk(directory_path):
-                logger.debug(f"Processing directory: {root}")
-                dir_name = os.path.basename(root)
-                results[dir_name] = []
-                
-                for file in files:
-                    if self.is_image_file(file):
-                        file_path = os.path.join(root, file)
-                        logger.debug(f"Processing file: {file_path}")
-                        result = self.process_file(file_path)
-                        if result:
-                            results[dir_name].append(result)
+            raise Exception(f"Directory not found: {directory_path}")
+        if not os.path.isdir(directory_path):
+            raise Exception(f"Not a directory: {directory_path}")
             
-            return results
-        except Exception as e:
-            logger.error(f"Error parsing directory {directory_path}: {e}")
-            raise Exception(f"Error parsing directory {directory_path}: {e}")
-
-def run_main():
-    """
-    Main function to run the image parser.
-    """
-    if len(sys.argv) != 3:
-        logger.error("Usage: python image_parser.py <openai_api_key> <input_directory>")
-        sys.exit(1)
-
-    api_key = sys.argv[1]
-    input_directory = sys.argv[2]
-
-    parser = ImageParser(api_key)
-    responses = parser.parse_directory(input_directory)
-    logger.info("JSON Responses:")
-    logger.info(responses)
-
-if __name__ == "__main__":
-    run_main()
+        results = {}
+        for root, _, files in os.walk(directory_path):
+            dir_results = []
+            for file in files:
+                file_path = os.path.join(root, file)
+                if self.is_image_file(file_path):
+                    result = self.process_image(file_path)
+                    if result:
+                        dir_results.append(result)
+                elif self.is_pdf_file(file_path):
+                    result = self.process_pdf(file_path)
+                    if result:
+                        dir_results.extend(result)
+                        
+            if dir_results:
+                dir_name = os.path.basename(root)
+                results[dir_name] = dir_results
+                
+        return results

@@ -1,149 +1,110 @@
+"""Test main module."""
 import os
-import sys
 import pytest
-from unittest.mock import patch, MagicMock
-from src.main import main, load_config
-from loguru import logger
-
-# Disable logger during tests
-logger.remove()
+from unittest.mock import Mock, patch
+from src.main import main
+from src.utils.config_manager import ConfigManager
 
 @pytest.fixture
-def test_config():
-    return {
-        'openai': {
-            'api_key': 'OPEN_API_KEY',
-            'vision': {
-                'model': 'gpt-4-vision-preview',
-                'max_tokens': 1000,
-                'messages': [{
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': 'Test message'},
-                        {'type': 'image_url', 'image_url': {'url_prefix': 'data:image/jpeg;base64,'}}
-                    ]
-                }]
-            }
-        },
-        'output': {
-            'excel': {
-                'default_filename': 'output.xlsx'
-            }
-        }
-    }
+def mock_openai():
+    with patch('openai.OpenAI') as mock:
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Test content"
+        mock_client.chat.completions.create.return_value = mock_response
+        mock.return_value = mock_client
+        yield mock
 
-def test_load_config(test_config):
-    with patch('yaml.safe_load', return_value=test_config), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()):
-        config = load_config()
-        assert config == test_config
+@pytest.fixture
+def mock_config():
+    with patch('src.utils.config_manager.ConfigManager') as mock:
+        mock_instance = Mock()
+        mock_instance.get.return_value = "test_api_key"
+        mock.return_value = mock_instance
+        yield mock
 
-def test_load_config_error():
-    with patch('yaml.safe_load', side_effect=Exception("Test error")), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         pytest.raises(Exception, match="Failed to load configuration: Test error"):
-        load_config()
+@pytest.fixture
+def test_env(tmp_path):
+    """Create test environment."""
+    test_dir = tmp_path / "test_dir"
+    test_dir.mkdir()
+    test_image = test_dir / "test.png"
+    test_image.write_bytes(b"test image")
+    output_file = tmp_path / "output.xlsx"
+    return {"dir": test_dir, "image": test_image, "output": output_file}
 
-def test_main_success(tmp_path, test_config):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    (input_dir / "test.jpg").write_bytes(b"test image")
-
-    with patch('sys.argv', ['script.py', str(input_dir)]), \
-         patch('yaml.safe_load', return_value=test_config), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('src.parsers.image_parser.ImageParser.parse_directory') as mock_parse, \
-         patch('src.generators.excel_generator.ExcelGenerator.create_excel') as mock_create, \
-         patch('src.generators.excel_generator.ExcelGenerator.save_excel', return_value=True) as mock_save, \
-         patch('loguru.logger.error') as mock_logger:
+def test_main_success(test_env, mock_openai, mock_config):
+    """Test successful execution."""
+    with patch('PIL.Image.open') as mock_open, \
+         patch('src.generators.excel_generator.ExcelGenerator.create_excel', return_value=True):
+        # Mock image processing
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
         
-        mock_parse.return_value = {"dir1": [{"content": "test"}]}
-        main()
+        # Run main
+        result = main([str(test_env["dir"]), str(test_env["output"])])
+        assert result == 0
+
+def test_main_no_args():
+    """Test with no arguments."""
+    with pytest.raises(SystemExit) as exc_info:
+        main([])
+    assert exc_info.value.code == 1
+
+def test_main_input_not_found():
+    """Test with nonexistent input directory."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["/nonexistent/dir", "output.xlsx"])
+    assert exc_info.value.code == 1
+
+def test_main_no_api_key(test_env, mock_config):
+    """Test without API key."""
+    mock_config.return_value.get.return_value = None
+    with pytest.raises(SystemExit) as exc_info:
+        main([str(test_env["dir"]), "output.xlsx"])
+    assert exc_info.value.code == 1
+
+def test_main_no_text_extracted(test_env, mock_openai, mock_config):
+    """Test when no text is extracted from files."""
+    with patch('PIL.Image.open') as mock_open, \
+         patch('src.parsers.image_parser.ImageParser.parse_directory', return_value={}):
+        # Mock image processing
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
         
-        mock_parse.assert_called_once()
-        mock_create.assert_called_once()
-        mock_save.assert_called_once()
-        mock_logger.assert_not_called()
+        with pytest.raises(SystemExit) as exc_info:
+            main([str(test_env["dir"]), str(test_env["output"])])
+        assert exc_info.value.code == 1
 
-def test_main_file_not_found():
-    with patch('sys.argv', ['script.py', '/nonexistent']), \
-         patch('yaml.safe_load', return_value={'openai': {'api_key': 'OPEN_API_KEY'}}), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('os.path.exists', return_value=False), \
-         patch('loguru.logger.error') as mock_logger, \
-         pytest.raises(SystemExit) as exc_info:
-        main()
-    assert exc_info.value.code == 1
-    mock_logger.assert_called_once_with("Error: Directory '/nonexistent' not found")
-
-def test_main_no_data_extracted(tmp_path, test_config):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-
-    with patch('sys.argv', ['script.py', str(input_dir)]), \
-         patch('yaml.safe_load', return_value=test_config), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('src.parsers.image_parser.ImageParser.parse_directory', return_value={"dir1": []}), \
-         patch('loguru.logger.error') as mock_logger, \
-         pytest.raises(SystemExit) as exc_info:
-        main()
-    assert exc_info.value.code == 1
-    mock_logger.assert_called_once_with("No data was extracted from the images")
-
-def test_main_save_excel_error(tmp_path, test_config):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-
-    with patch('sys.argv', ['script.py', str(input_dir)]), \
-         patch('yaml.safe_load', return_value=test_config), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('src.parsers.image_parser.ImageParser.parse_directory') as mock_parse, \
-         patch('src.generators.excel_generator.ExcelGenerator.create_excel'), \
-         patch('src.generators.excel_generator.ExcelGenerator.save_excel', return_value=False), \
-         patch('loguru.logger.error') as mock_logger, \
-         pytest.raises(SystemExit) as exc_info:
+def test_main_excel_creation_failed(test_env, mock_openai, mock_config):
+    """Test when Excel creation fails."""
+    with patch('PIL.Image.open') as mock_open, \
+         patch('src.generators.excel_generator.ExcelGenerator.create_excel', return_value=False):
+        # Mock image processing
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
         
-        mock_parse.return_value = {"dir1": [{"content": "test"}]}
-        main()
-    assert exc_info.value.code == 1
-    mock_logger.assert_called_once_with("Error: Failed to save Excel file")
+        with pytest.raises(SystemExit) as exc_info:
+            main([str(test_env["dir"]), str(test_env["output"])])
+        assert exc_info.value.code == 1
 
-def test_main_entry_point():
-    with patch('sys.argv', ['script.py']), \
-         patch('yaml.safe_load', return_value={'openai': {'api_key': 'OPEN_API_KEY'}}), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('loguru.logger.error') as mock_logger, \
+def test_main_general_exception(test_env, mock_config):
+    """Test general exception handling."""
+    with patch('PIL.Image.open', side_effect=Exception("Test error")):
+        with pytest.raises(SystemExit) as exc_info:
+            main([str(test_env["dir"]), str(test_env["output"])])
+        assert exc_info.value.code == 1
+
+def test_config_load_error(test_env):
+    """Test configuration loading error."""
+    with patch('src.utils.config_manager.ConfigManager', side_effect=Exception("Config error")), \
          pytest.raises(SystemExit) as exc_info:
-        main()
+        main([str(test_env["dir"]), str(test_env["output"])])
     assert exc_info.value.code == 1
-    mock_logger.assert_called_once_with("Usage: python main.py <input_directory>")
-
-def test_main_general_error(tmp_path, test_config):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-
-    with patch('sys.argv', ['script.py', str(input_dir)]), \
-         patch('yaml.safe_load', return_value=test_config), \
-         patch('os.path.dirname', return_value="/test"), \
-         patch('os.path.join', return_value="/test/conf/api_config.yaml"), \
-         patch('builtins.open', MagicMock()), \
-         patch('src.parsers.image_parser.ImageParser.parse_directory', side_effect=Exception("Test error")), \
-         patch('loguru.logger.error') as mock_logger, \
-         pytest.raises(SystemExit) as exc_info:
-        main()
-    assert exc_info.value.code == 1
-    mock_logger.assert_called_once_with("Error: Test error")

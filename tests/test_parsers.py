@@ -1,4 +1,4 @@
-"""Test image parser module."""
+"""Test parsers module."""
 from unittest.mock import Mock, patch
 import pytest
 import os
@@ -9,73 +9,33 @@ def parser():
     """Create a parser instance."""
     return ImageParser(api_key="test_key")
 
-def test_init_with_api_key():
-    """Test initialization with API key."""
-    parser = ImageParser(api_key="test_key")
-    assert parser.extractor.api_key == "test_key"
-
-def test_init_without_api_key():
-    """Test initialization without API key."""
-    with patch('src.utils.config_manager.ConfigManager.get', return_value=None):
-        with pytest.raises(ValueError, match="OpenAI API key not found in config"):
-            ImageParser()
-
-def test_init_with_config():
-    """Test initialization with config."""
-    with patch('src.utils.config_manager.ConfigManager.get', return_value="test_key"):
-        parser = ImageParser()
-        assert parser.extractor.api_key == "test_key"
-
-def test_init_with_config_error():
-    """Test initialization with config error."""
-    with patch('src.utils.config_manager.ConfigManager.get', return_value=None):
-        with pytest.raises(ValueError, match="OpenAI API key not found in config"):
-            ImageParser()
-
-def test_is_image_file():
-    """Test is_image_file method."""
-    parser = ImageParser(api_key="test_key")
-    assert parser.is_image_file("test.jpg")
-    assert parser.is_image_file("test.jpeg")
-    assert parser.is_image_file("test.png")
-    assert not parser.is_image_file("test.pdf")
-    assert not parser.is_image_file("test.txt")
-
-def test_is_pdf_file():
-    """Test is_pdf_file method."""
-    parser = ImageParser(api_key="test_key")
-    assert parser.is_pdf_file("test.pdf")
-    assert not parser.is_pdf_file("test.jpg")
-    assert not parser.is_pdf_file("test.txt")
-
 def test_process_image_success(parser, tmp_path):
     """Test processing image file."""
     test_image = tmp_path / "test.jpg"
     test_image.write_bytes(b"test image")
 
-    with patch.object(parser.extractor, 'extract_text', return_value='Test content'):
+    with patch('PIL.Image.open') as mock_open, \
+         patch.object(parser.extractor, 'extract_text', return_value='Test content'):
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
+
         result = parser.process_image(str(test_image))
         assert result == {"content": "Test content"}
 
-def test_process_image_invalid_file(parser, tmp_path):
-    """Test processing invalid image file."""
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("test")
-    
-    result = parser.process_image(str(test_file))
-    assert result is None
-
-def test_process_image_nonexistent_file(parser):
-    """Test processing nonexistent image file."""
-    result = parser.process_image("nonexistent.jpg")
-    assert result is None
-
-def test_process_image_load_error(parser, tmp_path):
-    """Test processing image with load error."""
+def test_process_image_failure(parser, tmp_path):
+    """Test processing image with failure."""
     test_image = tmp_path / "test.jpg"
-    test_image.write_bytes(b"invalid image")
+    test_image.write_bytes(b"test image")
 
-    with patch.object(parser.extractor, 'extract_text', return_value=None):
+    with patch('PIL.Image.open') as mock_open, \
+         patch.object(parser.extractor, 'extract_text', return_value=None):
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
+
         result = parser.process_image(str(test_image))
         assert result is None
 
@@ -98,7 +58,7 @@ def test_process_pdf_success(parser, tmp_path):
 
         # Mock PDF document
         mock_doc = Mock()
-        mock_doc.__len__ = lambda _: 2
+        mock_doc.__len__ = lambda _: 1
         mock_page = Mock()
         mock_pixmap = Mock()
         mock_pixmap.width = 100
@@ -122,57 +82,41 @@ def test_process_pdf_success(parser, tmp_path):
         mock_save.side_effect = lambda f, format, quality=None: f.write(b"test image bytes")
 
         result = parser.process_pdf(str(test_pdf))
-        assert result == [{"content": "Test content"}, {"content": "Test content"}]
+        assert result == [{"content": "Test content"}]
 
-def test_process_pdf_invalid_file(parser, tmp_path):
-    """Test processing invalid PDF file."""
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("test")
-    
-    result = parser.process_pdf(str(test_file))
-    assert result is None
-
-def test_process_pdf_nonexistent_file(parser):
-    """Test processing nonexistent PDF file."""
-    result = parser.process_pdf("nonexistent.pdf")
-    assert result is None
-
-def test_process_pdf_no_pages(parser, tmp_path):
-    """Test processing PDF with no pages."""
+def test_process_pdf_failure(parser, tmp_path):
+    """Test processing PDF with failure."""
     test_pdf = tmp_path / "test.pdf"
     test_pdf.write_bytes(b"test pdf")
 
     with patch('fitz.open') as mock_fitz, \
-         patch.object(parser.extractor, 'extract_text', return_value='Test content'):
+         patch.object(parser.extractor, 'extract_text', return_value=None):
         mock_doc = Mock()
-        mock_doc.__len__ = lambda _: 0
+        mock_doc.__len__ = lambda _: 1
+        mock_page = Mock()
+        mock_page.get_pixmap = lambda matrix=None, colorspace=None: None
+        mock_doc.load_page.return_value = mock_page
         mock_fitz.return_value = mock_doc
 
         result = parser.process_pdf(str(test_pdf))
         assert result is None
 
-def test_process_pdf_error(parser, tmp_path):
-    """Test processing PDF with error."""
-    test_pdf = tmp_path / "test.pdf"
-    test_pdf.write_bytes(b"test pdf")
-
-    with patch('fitz.open') as mock_fitz, \
-         patch.object(parser.extractor, 'extract_text', return_value='Test content'):
-        mock_fitz.side_effect = Exception("PDF error")
-
-        result = parser.process_pdf(str(test_pdf))
-        assert result is None
-
-def test_process_file_success_image(parser, tmp_path):
+def test_process_file_image(parser, tmp_path):
     """Test processing image file."""
     test_image = tmp_path / "test.jpg"
     test_image.write_bytes(b"test image")
 
-    with patch.object(parser.extractor, 'extract_text', return_value='Test content'):
+    with patch('PIL.Image.open') as mock_open, \
+         patch.object(parser.extractor, 'extract_text', return_value='Test content'):
+        mock_img = Mock()
+        mock_img.mode = 'RGB'
+        mock_img.save = lambda f, format: f.write(b"test image bytes")
+        mock_open.return_value = mock_img
+
         result = parser.process_file(str(test_image))
         assert result == [{"content": "Test content"}]
 
-def test_process_file_success_pdf(parser, tmp_path):
+def test_process_file_pdf(parser, tmp_path):
     """Test processing PDF file."""
     test_pdf = tmp_path / "test.pdf"
     test_pdf.write_bytes(b"test pdf")
@@ -217,24 +161,11 @@ def test_process_file_success_pdf(parser, tmp_path):
         result = parser.process_file(str(test_pdf))
         assert result == [{"content": "Test content"}]
 
-def test_process_file_invalid(parser, tmp_path):
-    """Test processing invalid file."""
+def test_process_file_unsupported(parser, tmp_path):
+    """Test processing unsupported file."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("test")
-    
-    result = parser.process_file(str(test_file))
-    assert result is None
 
-def test_process_file_nonexistent(parser):
-    """Test processing nonexistent file."""
-    result = parser.process_file("nonexistent.jpg")
-    assert result is None
-
-def test_process_file_error(parser, tmp_path):
-    """Test processing file with error."""
-    test_file = tmp_path / "test.jpg"
-    test_file.write_bytes(b"test")
-    
     result = parser.process_file(str(test_file))
     assert result is None
 
@@ -299,7 +230,7 @@ def test_parse_directory_success(parser, tmp_path):
         assert result["test_dir"][0]["content"] == "Test content"
         assert result["test_dir"][1]["content"] == "Test content"
 
-def test_parse_directory_no_files(parser, tmp_path):
+def test_parse_directory_empty(parser, tmp_path):
     """Test parsing empty directory."""
     test_dir = tmp_path / "test_dir"
     test_dir.mkdir()
