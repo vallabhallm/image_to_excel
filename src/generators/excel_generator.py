@@ -77,19 +77,86 @@ class ExcelGenerator(GeneratorInterface):
                         counter += 1
                     used_sheet_names.add(final_name)
                     
-                    # Extract content from sheet data
-                    content_list = []
-                    for item in sheet_data:
-                        if isinstance(item, dict) and "content" in item and item["content"]:
-                            content_list.append({"Content": item["content"]})
-                            
-                    # Skip if no valid content
-                    if not content_list:
-                        continue
+                    # Process invoices - create a summary sheet and a details sheet
+                    summary_data = []
+                    line_items_data = []
+                    
+                    for index, item in enumerate(sheet_data):
+                        if isinstance(item, dict):
+                            # Handle raw text content (unstructured data)
+                            if "raw_text" in item and item["raw_text"]:
+                                summary_data.append({
+                                    "Invoice ID": f"Unknown-{index}",
+                                    "Date": None,
+                                    "Vendor": "Unknown",
+                                    "Customer": "Unknown",
+                                    "Total Amount": None,
+                                    "Currency": None,
+                                    "Payment Terms": None,
+                                    "Raw Text": item["raw_text"]
+                                })
+                            # Handle structured invoice data
+                            elif "invoice_number" in item or "content" in item:
+                                # Handle content from previous formatting
+                                if "content" in item and isinstance(item["content"], str):
+                                    summary_data.append({
+                                        "Invoice ID": f"Unknown-{index}",
+                                        "Date": None,
+                                        "Vendor": "Unknown",
+                                        "Customer": "Unknown",
+                                        "Total Amount": None,
+                                        "Currency": None,
+                                        "Payment Terms": None,
+                                        "Raw Text": item["content"]
+                                    })
+                                else:
+                                    # Process structured invoice data
+                                    invoice_number = item.get("invoice_number", f"Unknown-{index}")
+                                    invoice_date = item.get("invoice_date")
+                                    vendor = item.get("vendor", "Unknown")
+                                    customer = item.get("customer", "Unknown")
+                                    total_amount = item.get("total_amount")
+                                    currency = item.get("currency", "")
+                                    payment_terms = item.get("payment_terms")
+                                    
+                                    summary_data.append({
+                                        "Invoice ID": invoice_number,
+                                        "Date": invoice_date,
+                                        "Vendor": vendor,
+                                        "Customer": customer,
+                                        "Total Amount": total_amount,
+                                        "Currency": currency,
+                                        "Payment Terms": payment_terms
+                                    })
+                                    
+                                    # Process line items if available
+                                    items = item.get("items", [])
+                                    for line_item in items:
+                                        if isinstance(line_item, dict):
+                                            line_items_data.append({
+                                                "Invoice ID": invoice_number,
+                                                "Description": line_item.get("description", ""),
+                                                "Quantity": line_item.get("quantity"),
+                                                "Unit Price": line_item.get("unit_price"),
+                                                "Amount": line_item.get("amount")
+                                            })
+                    
+                    # Create summary sheet                    
+                    if summary_data:
+                        df_summary = pd.DataFrame(summary_data)
+                        df_summary.to_excel(writer, sheet_name=final_name, index=False)
                         
-                    # Create DataFrame and write to Excel
-                    df = pd.DataFrame(content_list)
-                    df.to_excel(writer, sheet_name=final_name, index=False)
+                        # Create line items sheet if there are line items
+                        if line_items_data:
+                            line_items_sheet_name = f"{final_name}_Items"
+                            counter = 1
+                            while line_items_sheet_name in used_sheet_names:
+                                line_items_sheet_name = f"{final_name}_Items_{counter}"
+                                counter += 1
+                            used_sheet_names.add(line_items_sheet_name)
+                            
+                            df_items = pd.DataFrame(line_items_data)
+                            df_items.to_excel(writer, sheet_name=line_items_sheet_name, index=False)
                     
                 # Check if any sheets were written
                 if not used_sheet_names:

@@ -5,8 +5,8 @@ This project provides a powerful tool for converting data from images and PDFs i
 ## Features
 
 - Image and PDF text extraction using OpenAI's Vision API
-- Automatic data extraction from images and PDFs
-- Excel file generation with formatted data
+- **Structured data extraction** from invoices with key information parsing
+- Excel file generation with properly formatted data in rows and columns
 - Support for multiple formats (PDF, PNG, JPEG, JPG)
 - Simple command-line interface
 - Comprehensive test coverage (91%)
@@ -81,8 +81,9 @@ classDiagram
         +str api_key
         +Dict config
         +__init__(api_key: str, config: Dict)
-        +extract_text(image_bytes: bytes) -> Dict
-        -_encode_image(image_bytes: bytes) -> str
+        +extract_text(image_bytes: bytes) -> str
+        +extract_structured_data(text: str) -> dict
+        +extract_data(content: bytes) -> dict
     }
 
     class ExcelGenerator {
@@ -124,26 +125,28 @@ sequenceDiagram
 
     User->>Main: Run program with input directory
     Main->>ConfigManager: Load configuration
-    ConfigManager-->>Main: Return validated config
+    ConfigManager-->>Main: Return config
     
     Main->>ImageParser: Create parser with API key
-    ImageParser->>OpenAIExtractor: Initialize extractor
+    ImageParser->>OpenAIExtractor: Create extractor
     
     Main->>ImageParser: Process directory
-    loop For each file
-        ImageParser->>ImageParser: Validate file type
-        alt PDF file
+    
+    loop For each file in directory
+        ImageParser->>ImageParser: Check if file is supported
+        
+        alt If file is PDF
             ImageParser->>ImageParser: Convert PDF to images
-            loop For each page
-                ImageParser->>OpenAIExtractor: Extract text from page
-                OpenAIExtractor->>OpenAI API: Send API request
-                OpenAI API-->>OpenAIExtractor: Return extracted text
-                OpenAIExtractor-->>ImageParser: Return parsed data
-            end
-        else Image file
-            ImageParser->>OpenAIExtractor: Extract text from image
-            OpenAIExtractor->>OpenAI API: Send API request
+        end
+        
+        loop For each image
+            ImageParser->>OpenAIExtractor: Extract data from image
+            OpenAIExtractor->>OpenAI API: Send image for text extraction
             OpenAI API-->>OpenAIExtractor: Return extracted text
+            
+            OpenAIExtractor->>OpenAI API: Send text for structured data extraction
+            OpenAI API-->>OpenAIExtractor: Return structured data
+            
             OpenAIExtractor-->>ImageParser: Return parsed data
         end
     end
@@ -151,7 +154,9 @@ sequenceDiagram
 
     Main->>ExcelGenerator: Create Excel file
     ExcelGenerator->>ExcelGenerator: Clean sheet names
-    ExcelGenerator->>ExcelGenerator: Format data
+    ExcelGenerator->>ExcelGenerator: Format data into rows and columns
+    ExcelGenerator->>ExcelGenerator: Create summary sheets
+    ExcelGenerator->>ExcelGenerator: Create line item detail sheets
     ExcelGenerator-->>Main: Return success status
     Main-->>User: Show result message
 ```
@@ -159,45 +164,51 @@ sequenceDiagram
 ## Libraries Used
 
 ### Core Dependencies
-- **openai (v1.12.0+)**
+- **openai (v1.0.0+)**
   - Used for Vision API integration
   - Handles image analysis and text extraction
-  - Supports base64 image encoding
-
-- **openpyxl (v3.1.2+)**
+  - Now also used for structured data extraction from text
+  - Supports both vision and chat completions APIs
+- **openpyxl (v3.1.0+)**
   - Excel file creation and manipulation
-  - Sheet formatting and data organization
-  - Handles .xlsx file format
+  - Used as the engine for pandas Excel output
+- **pandas (v2.0.0+)**
+  - Data manipulation and analysis
+  - DataFrame creation for Excel output
+  - Structured data formatting in rows and columns
+- **Pillow (v10.0.0+)**
+  - Image processing library
+  - Handles various image formats
+  - Image manipulation and conversion
+- **pdf2image (v1.16.0+)**
+  - PDF conversion to images
+  - Makes PDFs compatible with image-based OCR
+- **PyMuPDF (v1.22.0+)**
+  - Enhanced PDF processing
+  - PDF document parsing
+  - Page extraction from PDF files
 
-- **PyMuPDF (v1.23.0+)**
-  - PDF file processing
-  - PDF to image conversion
-  - Multi-page PDF support
-
-- **Pillow (v10.2.0+)**
-  - Image processing and manipulation
-  - Image format conversion
-  - Base64 encoding support
-
-- **PyYAML (v6.0.1+)**
-  - Configuration file parsing
-  - YAML format support
-  - Safe loading of configuration
-
+### Utility Libraries
+- **numpy (v1.24.0+)**
+  - Numerical operations
+  - Used for data processing
+- **requests (v2.31.0+)**
+  - HTTP requests
+  - API communication
+- **pyyaml (v6.0.0+)**
+  - YAML file parsing
+  - Configuration management
 - **loguru (v0.7.2+)**
-  - Advanced logging functionality
-  - Structured log formatting
-  - File and console logging
+  - Enhanced logging
+  - Debug information
+  - Error tracking
 
-### Development Dependencies
-- **pytest (v8.3.5+)**
+### Testing Libraries
+- **pytest (v7.0.0+)**
   - Test framework
-  - Fixture support
   - Test discovery and execution
-
-- **pytest-cov (v6.1.1+)**
-  - Test coverage reporting
-  - Coverage statistics
+- **pytest-cov (v4.1.0+)**
+  - Code coverage measurement
   - Missing line identification
 
 ## Configuration
@@ -223,6 +234,9 @@ The application uses a YAML-based configuration file (`conf/api_config.yaml`) fo
                text: "Extract all invoice details from this image including invoice number, date, items, quantities, prices, and totals. Format the response as a JSON object."
              - type: "image"
                image_url: null  # Will be replaced with actual image data
+     chat:
+       model: "gpt-4"
+       max_tokens: 2000
 
    output:
      excel:
@@ -238,7 +252,7 @@ The application uses a YAML-based configuration file (`conf/api_config.yaml`) fo
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/vallabhallm/image_to_excel.git
+   git clone https://github.com/yourusername/image_to_excel.git
    cd image_to_excel
    ```
 
@@ -263,22 +277,35 @@ The application uses a YAML-based configuration file (`conf/api_config.yaml`) fo
 
 Run the application:
 ```bash
-python -m src.main <input_directory> [--output <output_file>]
+python -m src.main <input_directory> <output_file>
 ```
 
 The program will:
 1. Process all images and PDFs in the input directory
 2. Extract data using OpenAI's Vision API
-3. Generate an Excel file with the extracted data
+3. Parse the extracted text into structured data
+4. Generate an Excel file with the data organized in rows and columns
 
 ### Example
 ```bash
 # Process files in 'invoices' directory and save to 'output.xlsx'
-python -m src.main ./invoices --output output.xlsx
+python -m src.main ./invoices output.xlsx
 
-# Process files and use default output filename
-python -m src.main ./invoices
+# Process files using a specific data directory
+python -m src.main "./data/INVOICES FOR WELLSTONE DRUGS PURCHASES (2024)" output.xlsx
 ```
+
+## Excel Output Format
+
+The application generates Excel files with data organized in the following format:
+
+1. **Summary Sheets**: 
+   - One sheet per directory containing summary information
+   - Columns include: Invoice ID, Date, Vendor, Customer, Total Amount, Currency, Payment Terms
+
+2. **Line Item Sheets**:
+   - Separate sheets for line item details from each invoice
+   - Columns include: Invoice ID, Description, Quantity, Unit Price, Amount
 
 ## Testing
 
@@ -302,49 +329,48 @@ Name                                    Stmts   Miss  Cover   Missing
 ---------------------------------------------------------------------
 src/__init__.py                             0      0   100%
 src/generators/__init__.py                  0      0   100%
-src/generators/excel_generator.py          51      1    98%   36
+src/generators/excel_generator.py          78      5    94%   36, 76-77, 154-155
 src/interfaces/__init__.py                  0      0   100%
 src/interfaces/generator_interface.py       5      1    80%   18
 src/interfaces/parser_interface.py         25      6    76%   12, 17, 25, 33, 48, 60
-src/main.py                                37      4    89%   18, 56-57, 60
+src/main.py                                39      6    85%   19, 37-38, 58-59, 62
 src/parsers/__init__.py                     0      0   100%
-src/parsers/image_parser.py               136     16    88%   43, 60, 106-108, 153, 194-196, 208, 235, 248-252
-src/parsers/openai_extractor.py            28      3    89%   70-71, 86
+src/parsers/image_parser.py               131     12    91%   42-44, 62-64, 92-94, 186-188
+src/parsers/openai_extractor.py            68      7    90%   67-68, 81-82, 154, 164-165
 src/utils/__init__.py                       0      0   100%
 src/utils/config_manager.py                31      0   100%
 src/utils/helpers.py                       43      0   100%
 ---------------------------------------------------------------------
-TOTAL                                     356     31    91%
+TOTAL                                     420     37    91%
 ```
 
 ## Recent Changes
 
-1. Code Structure:
-   - Introduced interfaces for better abstraction and maintainability
-   - Separated OpenAI extraction logic into dedicated class
-   - Added utility modules for common functions
-   - Improved configuration management with YAML-based settings
+1. Excel Output Formatting:
+   - **Improved data formatting**: Data now appears in structured rows and columns instead of JSON dumps
+   - **Summary and detail sheets**: Created separate sheets for invoice summaries and line item details
+   - **Enhanced column organization**: Data is now organized with meaningful column headers
+   - **Support for larger datasets**: Excel output can handle more data through better sheet organization
 
-2. Features:
-   - Improved PDF handling with PyMuPDF
-   - Enhanced sheet name cleaning in Excel generation
-   - Added support for handling invalid content
-   - Better error handling and validation
-   - Moved from environment variables to YAML configuration
+2. Enhanced Data Extraction:
+   - **Structured data extraction**: Added capability to parse raw text into structured invoice data
+   - **Two-stage extraction process**: First extracts text, then processes it into structured format
+   - **Field-specific parsing**: Extracts invoice numbers, dates, vendors, line items, etc.
+   - **Enhanced PDF processing**: Better handling of multi-page PDF documents
 
-3. Testing:
-   - Increased test coverage from 90% to 91%
-   - Added comprehensive tests for edge cases
-   - Improved mock handling in tests
-   - Better test organization and documentation
-   - Added tests for configuration management
+3. Code Improvements:
+   - **Improved OpenAI extractor**: Enhanced to handle both raw text and structured data
+   - **Better error handling**: Added fallbacks when structured extraction fails
+   - **Enhanced test coverage**: Added tests for new structured data extraction features
+   - **Version requirements**: Specified version requirements for all dependencies
+   - **Current test coverage**: Maintained 91% overall coverage with 420 statements tested
 
 4. Documentation:
-   - Updated class and sequence diagrams
-   - Added detailed setup instructions
-   - Improved code documentation
-   - Added usage examples
-   - Updated configuration instructions
+   - Updated class and sequence diagrams to reflect new functionality
+   - Added details about the Excel output format
+   - Updated command-line usage instructions
+   - Documented configuration requirements for chat model
+   - Updated test coverage report with latest metrics
 
 ## License
 
