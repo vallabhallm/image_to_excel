@@ -32,8 +32,8 @@ class DataExtractor(ABC):
         """Extract data from content."""
         pass
 
-class ParserInterface(ABC):
-    """Parser interface."""
+class FileProcessorInterface(ABC):
+    """Interface for processing individual files."""
 
     @abstractmethod
     def process_file(self, file_path: str) -> Optional[List[Dict]]:
@@ -46,6 +46,29 @@ class ParserInterface(ABC):
             List of dictionaries containing extracted content
         """
         pass
+        
+class DirectoryProcessorInterface(ABC):
+    """Interface for processing directories."""
+    
+    @abstractmethod
+    def process_directory(self, directory_path: str) -> List[Dict]:
+        """Process all files in a directory.
+        
+        Args:
+            directory_path: Path to directory
+            
+        Returns:
+            List of dictionaries containing extracted content from all files
+        """
+        pass
+        
+class ParserInterface(FileProcessorInterface, DirectoryProcessorInterface):
+    """Combined parser interface that can handle both files and directories.
+    
+    This interface exists for backward compatibility and combines the 
+    functionality of both FileProcessorInterface and DirectoryProcessorInterface.
+    For new implementations, consider using the more focused interfaces.
+    """
 
     @abstractmethod
     def parse_directory(self, directory_path: str) -> Dict[str, List[Dict]]:
