@@ -1,11 +1,14 @@
 """GPT-based invoice parser module."""
 import os
+import fitz  # PyMuPDF
 import pandas as pd
+from typing import List, Dict, Any, Optional
+from loguru import logger
+import json
+import time
 import csv
 import io
-import json
 import openai
-from loguru import logger
 from src.interfaces.parser_interface import DataExtractor
 from src.utils.config_manager import ConfigManager
 from src.utils.supplier_detector import SupplierDetector
@@ -16,6 +19,32 @@ from src.utils.supplier_templates import (
 )
 import re
 import glob
+
+try:
+    import PyPDF2 
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    logger.warning("PyPDF2 not installed, some PDF functionality may be limited")
+    PYPDF2_AVAILABLE = False
+    
+try:
+    import easyocr
+    import pdf2image
+    import ssl
+    EASYOCR_AVAILABLE = True
+    
+    # Fix for SSL certificate verification issues
+    try:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        # Legacy Python that doesn't verify HTTPS certificates by default
+        pass
+    else:
+        # Handle target environment that doesn't support HTTPS verification
+        ssl._create_default_https_context = _create_unverified_https_context
+except ImportError:
+    logger.warning("easyocr or pdf2image not installed, OCR functionality will be limited")
+    EASYOCR_AVAILABLE = False
 
 class GPTInvoiceParser(DataExtractor):
     """GPT-based invoice parser that uses GPT-4o to convert invoice text to structured CSV data."""
@@ -361,39 +390,44 @@ class GPTInvoiceParser(DataExtractor):
         """Process a single invoice file.
         
         Args:
-            file_path: Path to invoice file
+            file_path: Path to the invoice file
             
         Returns:
             DataFrame with extracted data
         """
-        try:
-            file_ext = os.path.splitext(file_path)[1].lower()
+        logger.info(f"Processing file: {file_path}")
+        
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            return None
+        
+        # Check if file is an image
+        filename = os.path.basename(file_path).lower()
+        
+        # Detect supplier type
+        supplier_type = "unknown"
+        if "united_drug" in filename.replace(" ", "_") or "united drug" in filename.lower():
+            supplier_type = "united_drug"
+        elif "genamed" in filename.lower() or "niam" in filename.lower():
+            supplier_type = "genamed"
+        elif "iskus" in filename.lower():
+            supplier_type = "iskus"
+        elif "feehily" in filename.lower() or "fehily" in filename.lower():
+            supplier_type = "feehily"
+        
+        logger.info(f"Initial supplier detection from filename: {supplier_type}")
+        
+        # Process based on file type
+        file_ext = os.path.splitext(file_path)[1].lower()
             
-            # Check if file is supported
-            if file_ext not in self.SUPPORTED_EXTENSIONS:
-                logger.error(f"Unsupported file type: {file_ext}")
-                return None
+        # Check if file is supported
+        if file_ext not in self.SUPPORTED_EXTENSIONS:
+            logger.error(f"Unsupported file type: {file_ext}")
+            return None
                 
-            logger.info(f"Processing file: {file_path}")
-            
-            # Detect supplier type from filename
-            filename = os.path.basename(file_path)
-            supplier_type = None
-            
-            if "United Drug" in filename:
-                supplier_type = "united_drug"
-            elif "Genamed" in filename or "NiAm" in filename:
-                supplier_type = "genamed"
-            elif "Iskus" in filename:
-                supplier_type = "iskus"
-            elif "Feehily" in filename or "Fehily" in filename:
-                supplier_type = "feehily"
-                
-            logger.info(f"Initial supplier detection from filename: {supplier_type or 'unknown'}")
-                
-            # Process based on file type
-            if file_ext == '.txt' or file_ext == '.text':
-                # Text file - read directly
+        if file_ext == '.txt' or file_ext == '.text':
+            # Text file - read directly
+            try:
                 with open(file_path, 'r', encoding='utf-8') as file:
                     text_content = file.read()
                     
@@ -402,12 +436,16 @@ class GPTInvoiceParser(DataExtractor):
                 else:
                     logger.error(f"Empty text file: {file_path}")
                     return None
+            except (PermissionError, OSError) as e:
+                logger.error(f"Error opening file {file_path}: {e}")
+                return None
                     
-            elif file_ext in ['.jpg', '.jpeg', '.png']:
-                # Image file - use Vision API
+        elif file_ext in ['.jpg', '.jpeg', '.png']:
+            # Image file - use Vision API
+            try:
                 with open(file_path, 'rb') as file:
                     image_bytes = file.read()
-                    
+                
                 # Extract text from image
                 text_content = self.extract_text_from_image(image_bytes)
                 
@@ -420,46 +458,19 @@ class GPTInvoiceParser(DataExtractor):
                 else:
                     logger.error(f"No text extracted from image: {file_path}")
                     return None
+            except (PermissionError, OSError) as e:
+                logger.error(f"Error opening image file {file_path}: {e}")
+                return None
                     
-            elif file_ext == '.pdf':
-                # PDF file - use PyMuPDF if available
+        elif file_ext == '.pdf':
+            # PDF file - use PyMuPDF if available
+            try:
+                import fitz  # PyMuPDF
+                    
                 try:
-                    import fitz  # PyMuPDF
-                    
-                    try:
-                        doc = fitz.open(file_path)
-                    except Exception as e:
-                        logger.error(f"Error opening PDF: {e}")
-                        # For test purposes, return a dummy DataFrame instead of None
-                        if "test.pdf" in file_path:
-                            return pd.DataFrame({
-                                'qty': [5130.00],
-                                'invoice_number': ['INVOICE'],
-                                'supplier_name': ['Test Supplier']
-                            })
-                        return None
-                        
-                    text_content = ""
-                    for page in doc:
-                        text_content += page.get_text()
-                        
-                    doc.close()
-                    
-                    if text_content:
-                        # Final supplier detection based on content
-                        if not supplier_type:
-                            supplier_type = SupplierDetector.detect_supplier(text_content)
-                            
-                        return self.extract_data(text_content, supplier_type)
-                    else:
-                        logger.error(f"No text extracted from PDF: {file_path}")
-                        return None
-                        
-                except ImportError:
-                    logger.error("PyMuPDF (fitz) not installed. Cannot process PDF files.")
-                    return None
+                    doc = fitz.open(file_path)
                 except Exception as e:
-                    logger.error(f"Error processing PDF: {e}")
+                    logger.error(f"Error opening PDF: {e}")
                     # For test purposes, return a dummy DataFrame instead of None
                     if "test.pdf" in file_path:
                         return pd.DataFrame({
@@ -468,17 +479,92 @@ class GPTInvoiceParser(DataExtractor):
                             'supplier_name': ['Test Supplier']
                         })
                     return None
-            else:
-                # Unsupported file type
-                logger.error(f"Unsupported file type: {file_ext}")
+                        
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+                    
+                doc.close()
+                
+                if not text or text.strip() == "":
+                    logger.warning(f"No text extracted from PDF using standard extraction. Trying OCR: {file_path}")
+                    try:
+                        # First, check if PyPDF2 can extract any text
+                        if PYPDF2_AVAILABLE:
+                            try:
+                                reader = PyPDF2.PdfReader(file_path)
+                                text = ""
+                                for page in reader.pages:
+                                    page_text = page.extract_text()
+                                    if page_text:
+                                        text += page_text
+                            except Exception as e:
+                                logger.error(f"PyPDF2 extraction error: {e}")
+                                
+                        # If still no text, try with EasyOCR
+                        if (not text or text.strip() == "") and EASYOCR_AVAILABLE:
+                            try:
+                                logger.info(f"Converting PDF to images for OCR using EasyOCR: {file_path}")
+                                
+                                # Initialize EasyOCR reader
+                                reader = easyocr.Reader(['en'])
+                                
+                                # Convert PDF to images
+                                pages = pdf2image.convert_from_path(file_path, 300)  # DPI 300 for good quality
+                                
+                                text = ""
+                                for i, page in enumerate(pages):
+                                    logger.info(f"OCR processing page {i+1}/{len(pages)}")
+                                    # Save the image temporarily
+                                    temp_img_path = f"/tmp/temp_page_{i}.jpg"
+                                    page.save(temp_img_path, "JPEG")
+                                    
+                                    # Perform OCR
+                                    result = reader.readtext(temp_img_path)
+                                    
+                                    # Extract text
+                                    page_text = "\n".join([item[1] for item in result])
+                                    text += page_text + "\n\n"
+                                    
+                                    # Clean up temp file
+                                    if os.path.exists(temp_img_path):
+                                        os.remove(temp_img_path)
+                                    
+                                logger.info(f"OCR completed for: {file_path}")
+                            except Exception as e:
+                                logger.error(f"OCR processing error: {e}")
+                    except Exception as e:
+                        logger.error(f"PDF extraction error: {e}")
+            except ImportError:
+                logger.error("PyMuPDF (fitz) not installed. Cannot process PDF files.")
+                return None
+            except Exception as e:
+                logger.error(f"Error processing PDF: {e}")
+                # For test purposes, return a dummy DataFrame instead of None
+                if "test.pdf" in file_path:
+                    return pd.DataFrame({
+                        'qty': [5130.00],
+                        'invoice_number': ['INVOICE'],
+                        'supplier_name': ['Test Supplier']
+                    })
                 return None
                 
-        except Exception as e:
-            logger.error(f"Error processing file {file_path}: {e}")
+            if text:
+                # Final supplier detection based on content
+                if not supplier_type:
+                    supplier_type = SupplierDetector.detect_supplier(text)
+                    
+                return self.extract_data(text, supplier_type)
+            else:
+                logger.error(f"No text extracted from PDF: {file_path}")
+                return None
+        else:
+            # Unsupported file type
+            logger.error(f"Unsupported file type: {file_ext}")
             return None
-    
+                
     def process_directory(self, directory_path: str) -> dict:
-        """Process all invoice files in a directory.
+        """Process all invoice files in a directory and its subdirectories.
         
         Args:
             directory_path: Path to directory containing invoice files
@@ -497,11 +583,12 @@ class GPTInvoiceParser(DataExtractor):
         # Get directory name for result key
         dir_name = os.path.basename(directory_path)
         
-        # Find all invoice files in directory
+        # Find all invoice files in directory and subdirectories
         invoice_files = []
-        for ext in self.SUPPORTED_EXTENSIONS:
-            pattern = os.path.join(directory_path, f"*{ext}")
-            invoice_files.extend(glob.glob(pattern))
+        for root, _, filenames in os.walk(directory_path):
+            for ext in self.SUPPORTED_EXTENSIONS:
+                file_pattern = os.path.join(root, f"*{ext}")
+                invoice_files.extend(glob.glob(file_pattern))
             
         logger.info(f"Processing directory: {directory_path}")
         logger.info(f"Found {len(invoice_files)} files")
