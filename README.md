@@ -419,17 +419,23 @@ TOTAL                                    1186    132    89%
    - Added comprehensive tests for error handling and edge cases
    - Implemented tests for all interfaces according to SOLID principles
    - Improved test stability and reliability
+   - Added specialized tests for supplier detection and constructor options
+   - Increased GPTInvoiceParser coverage from 33% to 64% with new test cases
 
 2. **GPT Invoice Parser Improvements**:
    - Enhanced flexibility with supplier-specific handling
    - Improved error handling and resilience
-   - Added batch and expiry date extraction with multiple formats
+   - Added batch and expiry date extraction with multiple formats 
    - Better handling of complex invoice formats
+   - Fixed supplier detection to properly handle apostrophes in "Fehily's" filenames
+   - Modified process_directory method to handle recursive directory traversal using os.walk
+   - Improved date and time normalization to handle various input formats
 
 3. **Excel Output Formatting**:
    - Improved data formatting with proper column types
    - Added separate sheets for line items with detailed information
    - Enhanced error handling during Excel generation
+   - Added supplier-specific sheet generation option
 
 4. **Interface Refinements**:
    - Implemented complete SOLID principles across all interfaces
